@@ -38,12 +38,13 @@ using std::thread;
 using std::queue;
 #include <functional>
 using std::ref;
-#include <bitset>
+#include <bitset> //using bitset rather than defining my own class for bit handling
 using std::bitset;
 // #include "boost/lockfree/queue.hpp"
 
-typedef uint64_t freq_type;
+typedef uint32_t freq_type;
 typedef uint8_t tail_type;
+typedef uint64_t totBits_type;
 
 typedef union{
 	char bytes[sizeof(freq_type)];
@@ -62,35 +63,41 @@ const uint64_t MAGIC = 861314319301;
 unsigned char bits;
 size_t bitCount = 0;
 
-struct H_tree{
-	H_tree(char data, freq_type freq=0):data_(data),freq_(freq){}
-	H_tree(H_tree * left, H_tree * right, freq_type freq=0):left_(left),right_(right),freq_(freq){}
-	H_tree(H_tree * left, H_tree * right, unsigned char data):left_(left),right_(right),data_(data){}
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * H_Node struct
+ * used by Huffman compression algorithm when mapping a file
+ * keeps track of two H_Node pointers, the character, and associated frequency
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+struct H_Node{
+	H_Node(char data, freq_type freq=0):data_(data),freq_(freq){}
+	H_Node(H_Node * left, H_Node * right, freq_type freq=0):left_(left),right_(right),freq_(freq){}
+	H_Node(H_Node * left, H_Node * right, unsigned char data):left_(left),right_(right),data_(data){}
 
-	H_tree * left_ = nullptr;
-	H_tree * right_ = nullptr;
+	H_Node * left_ = nullptr;
+	H_Node * right_ = nullptr;
 	unsigned char data_;
 	freq_type freq_ = 0;
-};//end struct tree
+};//end struct H_Node
 
-/*
- * PointerCompare function
- * compares two pointers to H_tree for sorting
- */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * PointerCompare()
+ * allows comparison of two H_Node pointers
+ * pass to std::sort as the comparsion function
+ * 	when sorting a container of H_Node pointers
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 struct PointerCompare{
-	bool operator() (const H_tree * lhs, const H_tree * rhs){
+	bool operator() (const H_Node * lhs, const H_Node * rhs){
 		return (*lhs).freq_ < (*rhs).freq_;
 	}
-};
+};//end PointerCompare struct
 
-/*
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
  * operator<
- * overloaded operator for H_tree objects
- * evaluates equlity of H_tree nodes based on their frequency value
- * if two H_tree nodes have equal frequency, 
- */
-bool operator<( H_tree & lhs, H_tree & rhs ) { 
-	// cout << "arrived in operator<" << endl;
+ * overloaded operator for H_Node objects
+ * evaluates equality of H_Node nodes based on their frequency value
+ * if two H_Node nodes have equal frequency, the left node is marked greater
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+bool operator<( H_Node & lhs, H_Node & rhs ) { 
 	if(lhs.freq_ == rhs.freq_){
 		if(lhs.left_ == nullptr && lhs.right_ == nullptr){
 			return true;
@@ -103,11 +110,18 @@ bool operator<( H_tree & lhs, H_tree & rhs ) {
 	return lhs.freq_ < rhs.freq_; 
 }
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * 
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 void invertNum(BytesToFreq & btf){
 	swap(btf.bytes[1],btf.bytes[4]);
 	swap(btf.bytes[2],btf.bytes[3]);
 }
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * printEncoding(ofstream &, map<unsigned char,string>)
+ * writes the map portion of the header to the ofstream
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 void printEncoding(fstream & ofs, map<unsigned char,string> & codeMap){
 	char map_size[sizeof(uint8_t)];
 	*map_size = codeMap.size();
@@ -130,6 +144,10 @@ void printEncoding(fstream & ofs, map<unsigned char,string> & codeMap){
 	}
 }
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * readEncoding(ifstream &, map<unsigned char, string)
+ * reads the map portion of the header from the ifstream
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 void readEncoding(fstream & ifs, map<unsigned char, string> & codeMap){
 	char size[sizeof(uint8_t)];
 	ifs.read(size,sizeof(uint8_t));
@@ -162,16 +180,14 @@ void readEncoding(fstream & ifs, map<unsigned char, string> & codeMap){
 	}
 }
 
-/* * * * * * * * *
- *  Compression  *
- * * * * * * * * */
-
-/*
- * countChars
- * takes int pointer initialized to const CHARS items
- * takes fstream by reference
- * tallys the number of characters by incrementing that index of the int array
- */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * countChars(freq_type *, ifstream &)
+ * Counts the frequency of characters in a file
+ * iterates through the ifstream and tallies the characters
+ * the value in the array at index "char" is incremented for each character found
+ * 
+ * used by compression algorithm
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 void countChars(freq_type * charCount, fstream & fs){
 	unsigned char * buff = new unsigned char[1];
 
@@ -196,12 +212,10 @@ void printMagic(fstream & fs){
 	fs << MAGIC;
 }
 
-/*
- * printCharCount
- * takes array of freq_type containing char frequencies
- * takes writable fstream by reference
- * prints char frequencies to the fstream
- */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * printCharCount(freq_type *, ofstream &)
+ * iterates through an array of character frequencies and prints them to the file
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 void printCharCount(freq_type * charCount, fstream & fs){
 	BytesToFreq buff;
 	
@@ -210,13 +224,12 @@ void printCharCount(freq_type * charCount, fstream & fs){
 		invertNum(buff);
 		fs.write( buff.bytes, sizeof(freq_type) );
 	}
-	// char buff[ sizeof(freq_type) ];
-	// for(int i = 0; i < CHARS; i++){
-	// 	*buff = charCount[i];
-	// 	fs.write( buff, sizeof(freq_type) );
-	// }
 }
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * printMap(map)
+ * templated function, prints out an std::map
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 template<typename A, typename B>
 void printMap(map<A,B> input){
 	for(auto i : input){
@@ -224,24 +237,10 @@ void printMap(map<A,B> input){
 	}
 }
 
-/*
- * printTrailingBits
- * takes freq_type containing total number of bits needed to compress the file
- * takes writeable fstream by reference
- * prints out the number of leftover bits to the file
- */
-// void printTrailingBits(freq_type freq, fstream & fs){
-// 	fs << (tail_type)(8 - (freq % 8) );
-// }
-
-/* * * * * * * * * *
- *  Decompression  *
- * * * * * * * * * */
-
-/*
- * readMagic
- * read number from file, return true if it is the magic number
- */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * readMagic(ifstream &)
+ * reads the magic number from the file
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 bool readMagic(fstream & fs){
 	uint64_t temp = 0;
 	char buff[8];
@@ -252,10 +251,12 @@ bool readMagic(fstream & fs){
 	return temp == MAGIC;
 }
 
-/*
- * readCharCount
- * reads the character frequency array from an encoded file
- */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * readCharCount(freq_type *, ifstream &)
+ * reads the character frequency from a compressed file
+ * 
+ * used by decompression
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 void readCharCount(freq_type * charCount, fstream & fs){
 	BytesToFreq buff;
 
@@ -266,17 +267,6 @@ void readCharCount(freq_type * charCount, fstream & fs){
 	}
 }
 
-/*
- * readTrailingBits
- * reads the number indicating the number of trash bits at the end of the file
- */
-tail_type readTrailingBits(fstream & fs){
-	tail_type tail;
-	fs.read( (char*)((long)tail),sizeof(tail_type) );
-	return tail;
-}
-
-
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
  * buildTree
  * takes int ptr to array with tallies of char counts
@@ -284,14 +274,14 @@ tail_type readTrailingBits(fstream & fs){
  * 
  * used by both comression and decompression
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-void buildTree(H_tree * & tree, freq_type * charCount){
-	deque<H_tree*> freqList;
+void buildTree(H_Node * & tree, freq_type * charCount){
+	deque<H_Node*> freqList;
 
 	//file deque with nodes for each character
 	for(int i = 0; i < CHARS ; i++){
 		if( charCount[i] ){
 			// if the frequency of a character is greater than 0, add it to the vector
-			freqList.push_back(new H_tree( (unsigned char)i, charCount[i] ) );
+			freqList.push_back(new H_Node( (unsigned char)i, charCount[i] ) );
 		}
 	}
 
@@ -301,7 +291,7 @@ void buildTree(H_tree * & tree, freq_type * charCount){
 		
 		//create a new node point that is the root of the first two items in the deque, 
 		//and has the combined frequency of those two items
-		freqList.push_back(new H_tree( freqList[0], freqList[1], freqList[0]->freq_ + freqList[1]->freq_ ) );
+		freqList.push_back(new H_Node( freqList[0], freqList[1], freqList[0]->freq_ + freqList[1]->freq_ ) );
 		//remove the two elements just used
 		freqList.pop_front();
 		freqList.pop_front();
@@ -312,11 +302,20 @@ void buildTree(H_tree * & tree, freq_type * charCount){
 	tree = freqList[0];
 }
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * getBit(unsigned char, int)
+ * takes a byte and a position
+ * gets the bit at the given position in the char
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 size_t getBit(unsigned char byte, int position){
 	//get bit at given position and return
 	return (byte >> position) & 0x1;
 }
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * setBit(char &, int, size_t)
+ * takes a b
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 void setBit(char & byte, int position, size_t val){
 	//code copied from stackoverflow
 	if(getBit(byte,position) == 0){
@@ -329,13 +328,13 @@ void setBit(char & byte, int position, size_t val){
 
 /*
  * mapCodes
- * takes a H_tree pointer
+ * takes a H_Node pointer
  * takes a map<unsigned char, string> by reference
  * takes a string
  * maps the tree by recursive transversal
  * each time a leaf is found, the char and path to it are added to the map
  */
-void mapCodes(H_tree * tree, map<unsigned char,string> & codeMap, string path){
+void mapCodes(H_Node * tree, map<unsigned char,string> & codeMap, string path){
 	if(tree->left_ == nullptr && tree->right_ == nullptr){
 		codeMap[tree->data_] = path;
 	} else {
@@ -348,8 +347,6 @@ void mapCodes(H_tree * tree, map<unsigned char,string> & codeMap, string path){
  * printEncodedByte
  * build a char using the first 8 bits in the queue
  * print the created char
- * 
- * used by compression algorithm
  */
 void printByte(fstream & fs, deque<size_t> & bitStream){
 	unsigned char byte;
@@ -360,43 +357,16 @@ void printByte(fstream & fs, deque<size_t> & bitStream){
 	bitStream.pop_front();
 
 	for(int i = 0; i < 7 && i <= bitStream.size(); i++){
-
-		// setBit(byte,7-i,bitStream[0]);
-		//left shift the byte by 1
-		// byte = byte << 1;
-		//add next bit to the byte
-		// byte + bitStream[0];
 		//delete bit from queue
 		bitStream.pop_front();
 	}
 	fs << byte;
 }
 
-/*
- * getChars
- * reads from ifs 
- */
-// unsigned char getChars(fstream & ifs, fstream & ofs, H_tree * tree){
-// 	unsigned char byte;
-
-// 	deque<size_t> bitStream;
-
-// 	if(ifs.good()){
-
-// 		while(ifs.good() && !(tree->left_ == nullptr && tree->right_ == nullptr) ){
-// 			ifs.read( (char)byte, 1 );
-
-// 			for(int i = 7; i >= 0; i--){
-// 				bitStream.push_back( getBit(byte,i) );
-// 			}
-
-// 			if(bitStream.size() >= 8){
-// 				printEncodedByte(ofs,bitStream);
-// 			}
-// 		}
-// 	}
-// }
 void readPlainText(fstream & ifs, map<unsigned char, string> & codeMap, queue<size_t> & bitStream, bool & complete){
+	if(ifs.is_open()){
+
+	}
 	// ifs.open("file.txt",ios::in | ios::binary);
 	// cout << "arrived in input function" << endl;
 	unsigned char byte = 0;
@@ -480,9 +450,11 @@ void writeEncodedBytes(fstream & ofs, queue<size_t> & bitStream, bool & complete
 bool encodeFile(fstream & ifs, fstream & ofs, map<unsigned char, string> & codeMap){
 	if(ifs.is_open() && ofs.is_open()){
 
-		//set placeholder for 
-		char placeholder[1];
-		placeholder[0] = 0;
+		totBits_type totalBits = 0;
+
+		//set placeholder for extraBits value
+		char placeholder[sizeof(totBits_type)];
+		*placeholder = 0;
 		ofs.write(placeholder,1);
 
 		printEncoding(ofs,codeMap);
@@ -501,7 +473,7 @@ bool encodeFile(fstream & ifs, fstream & ofs, map<unsigned char, string> & codeM
 		while(ifs.good()){
 			ifs.read(iBuff,1);
 			codeBuff += codeMap[*iBuff];
-			// if(ifs.peek() == EOF) break;
+			// extraBits += codeMap[*iBuff].length();
 		}
 
 		//add additional bits to code buffer to bring the last byte up to 8 bits
@@ -522,9 +494,11 @@ bool encodeFile(fstream & ifs, fstream & ofs, map<unsigned char, string> & codeM
 			ofs.write(oBuff,1);
 		}
 
+		// *placeholder = totalBits
 		//jump back to beginning of file and write the number of extra bits
 		ofs.seekp(ios_base::beg);
 		ofs.write( extraBits, 1 );
+		// ofs.write( placeholder, sizeof(totBits_type) );
 
 	} else {
 		cout << "File IO error in encodeFile function." << endl;
@@ -595,48 +569,18 @@ bool decodeFile(fstream & ifs, fstream & ofs, map<string, unsigned char> & charM
     		i=0;
     	}
     }
-  }
-/*
-
-    while(ifs.good()){
-      ifs.read(iBuff,1);
-      encodedText.push_back(iBuff);
-      
-      bitset<8> byte(*iBuff);
-      for(int i = 0; i < 8; i++){
-        sBuff += byte.to_string();
-      }
-      
-      eof = (ifs.peek() == EOF);
-      
-      //if we are at EOF
-      if(eof){
-        sBuff.erase(sBuff.length()-trailingBits,sBuff.length());
-      }
-      
-      if(sBuff.length() >= range.min){
-        for(int i = range.min; i <= range.max && i < sBuff.length(); i++){
-          if( charMap.find( sBuff.substr(0,i) ) != charMap.end() ){
-            obuff[0] = charMap[sBuff.substr(0,i)];
-            sBuff.erase(0,i);
-            ofs.write(obuff,1);
-          }
-        }
-      }
-    }
-  } else {
+  }else {
+  	cout << "File IO error in decodeFile function" << endl;
   	return false;
-  }	*/
+  }
   return true;
 }
 
-void printStuff(string stuff){
-	cout << stuff << endl;
-}
-
-/*
- * compression
- */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * compression(string,string)
+ * provide input and output filenames
+ * compresses the input file and stores it in the output file
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 bool compression(string inFile, string outFile){
 	fstream ifs(inFile, ios::in | ios::binary | ios::ate);
 	fstream ofs(outFile, ios::out | ios::binary | ios::ate);
@@ -645,34 +589,19 @@ bool compression(string inFile, string outFile){
 		ifs.seekg(ios_base::beg);
 		ofs.seekp(ios_base::beg);
 
-		// char placeholder[1];
-		// placeholder[0] = 0;
-		// ofs.write( placeholder, sizeof(tail_type) );
-
 		//count char frequency in file
 		freq_type charCount[CHARS] = {};
 		countChars(charCount,ifs);
 
 		//build tree from char freqency list
-		H_tree * tree;
+		H_Node * tree;
 		buildTree(tree,charCount);
-
-		//print header
-		// printCharCount(charCount,ofs);
 
 		map<unsigned char, string> codeMap;
 		mapCodes(tree,codeMap,"");
 
-		// printEncoding(ofs,codeMap);
-
-		// ifs.seekg(0);
-
-		// encodeChars(ifs,ofs,codeMap);
-
 		bool complete = false;
 		queue<size_t> bitStream;
-
-		// printMap(codeMap);
 
 		bool success = encodeFile(ifs,ofs,codeMap);
 
@@ -689,6 +618,11 @@ bool compression(string inFile, string outFile){
 	return true;
 }
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * decompression(string,string)
+ * given input and output filenames, decomresses the file
+ * 
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 bool decompression(string inFile, string outFile){
 	fstream ifs(inFile, ios::in | ios::binary | ios::ate);
 	fstream ofs(outFile, ios::out | ios::binary | ios::ate);
@@ -716,16 +650,10 @@ bool decompression(string inFile, string outFile){
 		for(auto iter = codeMap.begin(); iter != codeMap.end(); iter++){
 			charMap[iter->second] = iter->first;
 		}
-		
-		// cout << "mapped chars" << endl;
-
-		// printMap(codeMap);
-		// printMap(charMap);
 
 		bool complete = false;
 		queue<unsigned char> byteStream;
 
-		// cout << "done setting up for decoding" << endl;
 		bool success = decodeFile(ifs,ofs,charMap,extraBits);
 
 		// thread output(writePlainText,ref(ofs),ref(byteStream),ref(complete));
@@ -740,7 +668,16 @@ bool decompression(string inFile, string outFile){
 	}
 	return false;
 }
-
+	
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * mapFile(string)
+ * given a file name, creates and maps the huffman tree of a file
+ * prints out the characters with their accompaning code
+ * 
+ * this is for demonstration purposes only
+ * it does not perform any compression or decompressions, and is
+ * not a required step to compress or decompress a file
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 bool mapFile(string inFile){
 	fstream ifs(inFile, ios::in | ios::binary | ios::ate);
 
@@ -752,9 +689,10 @@ bool mapFile(string inFile){
 		countChars(charCount,ifs);
 
 		//build tree from char frequency list
-		H_tree * tree;
+		H_Node * tree;
 		buildTree(tree,charCount);
 
+		//map the tree
 		map<unsigned char, string> codeMap;
 		mapCodes(tree,codeMap,"");
 
@@ -764,26 +702,27 @@ bool mapFile(string inFile){
 	else {
 		return false;
 	}
-	return true;
+	return false;
 }
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * inputError
+ * prints instructions for program usage to std::cout
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 void inputError(){
+	cout << "\n";
 	cout << "Incorrect usage.\n";
 	cout << "Run the program using the following options.\n";
 	cout << "  Compression:\n";
 	cout << "   -c SOURCE DESTINATION\n";
 	cout << "  Decompression:\n";
 	cout << "   -d SOURCE DESTINATION\n";
-	cout << "  Print Map:\n";
+	cout << "  Map file: only for deomnstration purposes\n";
 	cout << "   -m SOURCE\n";
 	cout << endl;
 }
 
 int main(int argc, char** argv){
-	// thread test(printStuff,"hello world");
-	// test.join();
-	// // cout << "argc: " << argc << endl;
-	// return 0;
 
 	if(argc == 4){
 		string option(argv[1]);
@@ -791,12 +730,12 @@ int main(int argc, char** argv){
 		string ofname(argv[3]);
 
 		if(option == "-c"){
-			if(compression(ifname,ofname)) cout << "Done compressing file." << endl;
-			else cout << "Unknown error when compressing." << endl;
+			if(compression(ifname,ofname)) cout << "Finished compressing file." << endl;
+			else cout << "Encountered error when compressing." << endl;
 		} 
 		else if(option == "-d"){
-			if(decompression(ifname,ofname)) cout << "Done decompressing file." << endl;
-			else cout << "Unknown error when decomressing." << endl;
+			if(decompression(ifname,ofname)) cout << "Finished decompressing file." << endl;
+			else cout << "Encountered error when decomressing." << endl;
 		} 
 		else {
 			inputError();
@@ -806,8 +745,8 @@ int main(int argc, char** argv){
 		string ifname(argv[2]);
 
 		if(option == "-m"){
-			if(mapFile(ifname)) cout << "Done mapping file." << endl;
-			else cout << "Unknown error when mapping file." << endl;
+			if(mapFile(ifname)) cout << "Finished mapping file." << endl;
+			else cout << "Encountered error when mapping file." << endl;
 		} 
 		else {
 			inputError();
@@ -816,68 +755,6 @@ int main(int argc, char** argv){
 	else {
 		inputError();
 	}
-
-
-		
-
- 	// freq_type charCount[CHARS] = {};
-
-	// string ifname,ofname;
-	// fstream fs;
-
-	// cout << "Enter an input filename: ";
-	// cin >> ifname;
-	// cout << "Enter an output filename: ";
-	// cin >> ofname;
-
-	
-
-	
-	// fs.open(fname, ios::in | ios::binary);
-
-	// if(fs.is_open()){
-	// 	cout << "opened file" << endl;
-	// 	cout << "counting chars..";
-	// 	countChars(charCount,fs);
-	// 	cout << "...done" << endl;
-	// 	cout << "creating tree..";
-	// 	H_tree * tree;
-	// 	buildTree(tree,charCount);
-	// 	cout << "...done" << endl;
-	// 	// cout << "printing inorder trasversal" << endl;
-	// 	// vector<unsigned char> chars;
-	// 	// inorder(tree,chars);
-	// 	// for(auto i : chars){
-	// 	// 	cout << (int)chars[i] << endl;
-	// 	// }
-
-	// 	map<unsigned char, string> codeMap;
-	// 	string path;
-	// 	cout << "mapping codes..";
-	// 	cout.flush();
-	// 	mapCodes(tree,codeMap,path);
-	// 	cout << "...done" << endl;
-	// 	for(auto i : codeMap){
-	// 		cout << (size_t)i.first << " " << i.second << endl;
-	// 	}
-
-
-
-	// } else {
-	// 	cout << "unable to open file" << endl;
-	// }
-	
-	// int countChars = 0;
-	// int countBits = 0;
-	// for(int i = 0; i < CHARS; i++){
-	// 	countBits += charCount[i];
-	// 	// cout << "[" << charCount[i] << "] ";
-	// 	if(charCount[i] != 0) countChars++;
-	// }
-	// cout << endl;
-	// cout << "Total bits: " << countBits << endl;
-	// cout << "Total chars: " << countChars << endl;
-
 
 	return 0;
 }
